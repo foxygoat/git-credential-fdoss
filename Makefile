@@ -24,16 +24,22 @@ clean::
 .PHONY: all check-uptodate ci clean
 
 # --- Build --------------------------------------------------------------------
+# We want a statically linked binary. github.com/godbus/dbus/v5 imports "net"
+# and "os/user", so specify the build tags to use the Go versions of these and
+# not the libc ones so that we get a static binary.
+GO_TAGS = netgo,osusergo
 GO_LDFLAGS = -X main.version=$(VERSION)
+GO_FLAGS = $(if $(GO_TAGS),-tags='$(GO_TAGS)')
+GO_FLAGS += $(if $(GO_LDFLAGS),-ldflags='$(GO_LDFLAGS)')
 CMDS = .
 
 ## Build git-credential-fdoss binary
 build: | $(O)
-	go build -o $(O) -ldflags='$(GO_LDFLAGS)' $(CMDS)
+	go build -o $(O) $(GO_FLAGS) $(CMDS)
 
 ## Build and install binaries in $GOBIN
 install:
-	go install -ldflags='$(GO_LDFLAGS)' $(CMDS)
+	go install $(GO_FLAGS) $(CMDS)
 
 ## Tidy go modules with "go mod tidy"
 tidy:
