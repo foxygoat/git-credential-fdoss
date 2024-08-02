@@ -1,0 +1,38 @@
+name: ci/cd
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  # CI is run on pull requests and pushes to master (i.e merging PRs)
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: ./bin/make ci
+
+  # Release is run only on pushes to master (i.e. merging PRs)
+  release:
+    runs-on: ubuntu-latest
+    needs: [ ci ]
+    if: github.event_name == 'push'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: ./bin/make release
+
+  # Send failure notification to slack if push to master job fails
+  howl-on-fail:
+    runs-on: ubuntu-latest
+    needs: [ ci, release ]
+    if: failure() && github.event_name == 'push'
+    steps:
+    - uses: foxygoat/howl@v1
+      env:
+        SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+        SLACK_TEXT: <!here|here>
