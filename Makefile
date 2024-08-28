@@ -24,8 +24,13 @@ clean::
 .PHONY: all check-uptodate ci clean
 
 # --- Build --------------------------------------------------------------------
+# git credential helpers need to be called git-credential-<name> for git to
+# find it when the config is set up to use the <name> credential helper.
 BIN_NAME = git-credential-fdoss
-GO_TAGS =
+# We want a statically linked binary. github.com/godbus/dbus/v5 imports "net"
+# and "os/user", so specify the build tags to use the Go versions of these and
+# not the libc ones so that we get a static binary.
+GO_TAGS = netgo,osusergo
 GO_LDFLAGS = -X main.version=$(VERSION)
 GO_FLAGS += $(if $(GO_TAGS),-tags='$(GO_TAGS)')
 GO_FLAGS += $(if $(GO_LDFLAGS),-ldflags='$(GO_LDFLAGS)')
@@ -49,7 +54,15 @@ lint:
 
 .PHONY: lint
 
-# --- Release -------------------------------------------------------------------
+# --- Docs ---------------------------------------------------------------------
+
+godoc: build
+	./bin/gengodoc.awk main.go > $(O)/out.go
+	mv $(O)/out.go main.go
+
+.PHONY: godoc
+
+# --- Release ------------------------------------------------------------------
 RELEASE_DIR = $(O)/release
 
 ## Tag and release binaries for different OS on GitHub release
