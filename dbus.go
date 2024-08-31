@@ -1,11 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"iter"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+)
+
+const (
+	noPrompt = dbus.ObjectPath("/")
 )
 
 // SecretService implements a client of the freedesktop.org DBus [Secret
@@ -105,34 +110,20 @@ func (ss *SecretService) Close() error {
 // [items]: https://specifications.freedesktop.org/secret-service-spec/0.2/ch03.html
 // [collection]: https://specifications.freedesktop.org/secret-service-spec/0.2/ch03.html
 func (ss *SecretService) Get(attrs map[string]string) (string, error) {
-	unlocked, locked, err := ss.search(attrs)
+	results, err := ss.searchExact(attrs)
 	if err != nil {
 		return "", err
 	}
 
-	// Find the first item with an exact attribute match. Sometimes
-	// attrs may be a subset of attributes that have been stored (e.g.
-	// may not contain a path), and we want to skip those. We return
-	// the secret of the first one found that matches.
-	for _, item := range unlocked {
-		ok, err := ss.attrsMatch(attrs, item)
+	for itemPath, err := range results {
 		if err != nil {
-			// We could continue to the next item but errors
-			// should not happen here, so lets surface them early.
 			return "", err
 		}
-		if !ok {
-			continue
-		}
-		secret, err := ss.getSecret(item)
+		secret, err := ss.getSecret(itemPath)
 		if err != nil {
 			return "", err
 		}
 		return string(secret.Secret), nil
-	}
-
-	if len(locked) > 0 {
-		fmt.Fprintln(os.Stderr, "TODO: Found locked secret. Sorry, can't unlock yet")
 	}
 
 	return "", nil
@@ -155,10 +146,20 @@ func (ss *SecretService) Store(label string, attrs map[string]string, secret str
 		ContentType: "text/plain",
 	}
 
+	// Try to unlock the collection first. Will be a no-op if it is not locked
+	// but if it is locked, we'll prompt the user to unlock it.
+	if _, err := ss.unlockObject(path); err != nil {
+		return err
+	}
+
 	var itemPath, promptPath dbus.ObjectPath
 	call := collection.Call("org.freedesktop.Secret.Collection.CreateItem", 0, props, &sec, true)
 	if err := call.Store(&itemPath, &promptPath); err != nil {
 		return fmt.Errorf("couldn't create secret: %w", err)
+	}
+
+	if promptPath != noPrompt {
+		return ss.prompt(promptPath)
 	}
 	return nil
 }
@@ -183,31 +184,16 @@ func (ss *SecretService) Store(label string, attrs map[string]string, secret str
 // the selected item occurs, or the secret cannot be deleted, an error is
 // returned.
 func (ss *SecretService) Delete(attrs map[string]string, expectedPassword string) error {
-	unlocked, locked, err := ss.search(attrs)
+	results, err := ss.searchExact(attrs)
 	if err != nil {
 		return err
 	}
 
-	// Find the first item with an exact attribute match. Sometimes
-	// attrs may be a subset of attributes that have been stored (e.g.
-	// may not contain a path), and we want to skip those. Ensure that
-	// expectedSecret matches the stored secret value
-	// the secret of the first one found that matches.
 	var itemPath dbus.ObjectPath
-	for _, item := range unlocked {
-		ok, err := ss.attrsMatch(attrs, item)
+	for item, err := range results {
 		if err != nil {
-			// We could continue to the next item but errors
-			// should not happen here, so lets surface them early.
 			return err
 		}
-		if !ok {
-			continue
-		}
-		// We will only erase the secret when presented with a password if the password
-		// stored in the secret matches that password. A secret can contain multiple
-		// fields separated by newlines. The password is the part before the first
-		// newline if there is one at all.
 		if expectedPassword != "" {
 			secret, err := ss.getSecret(item)
 			if err != nil {
@@ -222,9 +208,6 @@ func (ss *SecretService) Delete(attrs map[string]string, expectedPassword string
 		break
 	}
 
-	if !itemPath.IsValid() && len(locked) > 0 {
-		fmt.Fprintln(os.Stderr, "TODO: Found locked secret. Sorry, can't unlock for erase yet")
-	}
 	if !itemPath.IsValid() {
 		return nil
 	}
@@ -236,11 +219,64 @@ func (ss *SecretService) Delete(attrs map[string]string, expectedPassword string
 		return err
 	}
 
-	if promptPath != dbus.ObjectPath("/") {
-		fmt.Fprintln(os.Stderr, "TODO: Got prompt on delete. Sorry, can't do that yet")
+	if promptPath == noPrompt {
+		return nil
 	}
 
-	return nil
+	return ss.prompt(promptPath)
+}
+
+// searchExact returns a function iterator that iterates all the items in the
+// SecretService that exactly match the given attributes. This is a more strict
+// search than the [SearchItems] method of the service in that the items
+// returned by the iterator will have only the given attribute and no extras.
+//
+// The iterator returns the item object path as the key and an error if the
+// item's attributes could not be retrieved.
+//
+// e.g.
+//
+//	results, err := ss.searchExact(attrs) {
+//	if err != nil {
+//		return err
+//	}
+//	for itemPath, err := results {
+//		if err != nil {
+//			return err
+//		}
+//		// .. do something with itemPath
+//	}
+//
+// [SearchItems]: https://specifications.freedesktop.org/secret-service-spec/latest/org.freedesktop.Secret.Service.html#org.freedesktop.Secret.Service.SearchItems
+func (ss *SecretService) searchExact(attrs map[string]string) (iter.Seq2[dbus.ObjectPath, error], error) {
+	unlocked, locked, err := ss.search(attrs)
+	if err != nil {
+		return nil, err
+	}
+	f := func(yield func(item dbus.ObjectPath, err error) bool) {
+		for _, itemPath := range unlocked {
+			ok, err := ss.attrsMatch(attrs, itemPath)
+			if !ok && err == nil {
+				continue
+			}
+			if !yield(itemPath, err) {
+				return
+			}
+		}
+		for _, itemPath := range locked {
+			ok, err := ss.attrsMatch(attrs, itemPath)
+			if !ok && err == nil {
+				continue
+			}
+			if err == nil {
+				itemPath, err = ss.unlockObject(itemPath)
+			}
+			if !yield(itemPath, err) {
+				return
+			}
+		}
+	}
+	return f, nil
 }
 
 // search returns all the unlocked and locked secret items that match the given
@@ -287,4 +323,80 @@ func (ss *SecretService) attrsMatch(attrs map[string]string, itemPath dbus.Objec
 		}
 	}
 	return true, nil
+}
+
+func (ss *SecretService) unlockObject(itemPath dbus.ObjectPath) (dbus.ObjectPath, error) {
+	unlocked, promptPath, err := ss.unlock([]dbus.ObjectPath{itemPath})
+	if err != nil {
+		return "", err
+	}
+
+	if len(unlocked) > 0 {
+		// we'll never get back more than 1 item in the slice
+		return unlocked[0], nil
+	}
+
+	if promptPath == noPrompt {
+		return "", fmt.Errorf("huh? no item or prompt when unlocking: %v", itemPath)
+	}
+
+	if err := ss.prompt(promptPath); err != nil {
+		return "", err
+	}
+	return itemPath, nil
+}
+
+// unlock attempts to [unlock] the objects given and returns the paths for the
+// objects that were unlocked and a prompt path to unlock the remainder.
+//
+// [unlock]: https://specifications.freedesktop.org/secret-service-spec/latest/unlocking.html
+func (ss *SecretService) unlock(objects []dbus.ObjectPath) (unlocked []dbus.ObjectPath, prompt dbus.ObjectPath, err error) {
+	svc := ss.conn.Object("org.freedesktop.secrets", dbus.ObjectPath("/org/freedesktop/secrets"))
+	call := svc.Call("org.freedesktop.Secret.Service.Unlock", 0, objects)
+	err = call.Store(&unlocked, &prompt)
+	return
+}
+
+// prompt calls Prompt on the [prompt] object at the given path and waits for
+// the Completed signal to be emitted from it. It returns true if the prompt
+// was completed, or false if it was cancelled. If an error occurs subscribing
+// to the signal or calling the prompt object, it is returned instead.
+//
+// [prompt]: https://specifications.freedesktop.org/secret-service-spec/latest/prompts.html
+func (ss *SecretService) prompt(path dbus.ObjectPath) error {
+	// Subscribe to signals on the prompt object so we can get the
+	// "Completed" signal when the prompt is complete. We do this
+	// before calling Prompt to ensure we do not miss it. Only one
+	// signal should ever arrive on the channel, so make it a
+	// buffererd channel of size 1 so the dbus library wont drop
+	// the signal.
+	ch := make(chan *dbus.Signal, 1)
+	ss.conn.Signal(ch)
+	defer ss.conn.RemoveSignal(ch)
+	if err := ss.conn.AddMatchSignal(dbus.WithMatchObjectPath(path)); err != nil {
+		return err
+	}
+	defer ss.conn.RemoveMatchSignal(dbus.WithMatchObjectPath(path)) //nolint:errcheck
+
+	svc := ss.conn.Object("org.freedesktop.secrets", path)
+	call := svc.Call("org.freedesktop.Secret.Prompt.Prompt", 0, "")
+	if call.Err != nil {
+		return call.Err
+	}
+
+	for sig := range ch {
+		if sig.Name != "org.freedesktop.Secret.Prompt.Completed" {
+			continue
+		}
+		var cancelled bool
+		var unlockPaths []dbus.ObjectPath
+		if err := dbus.Store(sig.Body, &cancelled, &unlockPaths); err != nil {
+			return err
+		}
+		if cancelled {
+			return errors.New("unlock cancelled by user")
+		}
+		break
+	}
+	return nil
 }
