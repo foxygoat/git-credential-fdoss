@@ -5,4 +5,5 @@ go 1.23
 require (
 	github.com/alecthomas/kong v0.9.0
 	github.com/godbus/dbus/v5 v5.1.0
+	golang.org/x/crypto v0.26.0
 )

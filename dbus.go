@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/big"
+	"os"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -26,6 +28,7 @@ type SecretService struct {
 	conn    *dbus.Conn
 	svc     dbus.BusObject
 	session dbus.BusObject
+	aesKey  []byte
 }
 
 // Secret is a struct compatible with the [Secret] struct type as defined in
@@ -56,22 +59,93 @@ func NewSecretService() (*SecretService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("couldn't connect to session bus: %w", err)
 	}
+
 	svc := conn.Object("org.freedesktop.secrets", dbus.ObjectPath("/org/freedesktop/secrets"))
 
-	var path dbus.ObjectPath
-	var output dbus.Variant
-	call := svc.Call("org.freedesktop.Secret.Service.OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if err := call.Store(&output, &path); err != nil {
-		return nil, fmt.Errorf("couldn't open secret session: %w", err)
+	ss := &SecretService{
+		conn: conn,
+		svc:  svc,
 	}
 
-	session := conn.Object("org.freedesktop.secrets", path)
+	if err := ss.OpenSession(); err != nil {
+		return nil, err
+	}
 
-	return &SecretService{
-		conn:    conn,
-		svc:     svc,
-		session: session,
-	}, nil
+	return ss, nil
+}
+
+// OpenSession opens a [session] to the secret service. Upon opening a session,
+// an AES key may be generated to secure the [transfer of secrets] with the
+// Secret Service. If no AES key is generated (len(ss.aesKey) == 0), then
+// secrets are not encrypted across the bus.
+//
+// We first try to negotiate an encrypted session, and if that fails we
+// fallback to a plain session. Not all implementations of the Secret Service
+// may support encrypted sessions.
+//
+// [session]: https://specifications.freedesktop.org/secret-service-spec/latest/sessions.html
+// [transfer of secrets]: https://specifications.freedesktop.org/secret-service-spec/latest/transfer-secrets.html
+func (ss *SecretService) OpenSession() error {
+	sessionPath, err := ss.openDHSession()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Warning: Failed to open encrypted session. Falling back to unencrypted.")
+		sessionPath, err = ss.openPlainSession()
+		if err != nil {
+			return err
+		}
+	}
+	ss.session = ss.conn.Object("org.freedesktop.secrets", sessionPath)
+	return nil
+}
+
+// openPlainSession opens a [plain] session to the secret service. Secets are
+// not encrypted over the bus with a plain session. It returns the path to the
+// session if successful, otherwise it returns an error.
+//
+// [plain]: https://specifications.freedesktop.org/secret-service-spec/latest/ch07s02.html
+func (ss *SecretService) openPlainSession() (dbus.ObjectPath, error) {
+	input := dbus.MakeVariant("")
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	call := ss.svc.Call("org.freedesktop.Secret.Service.OpenSession", 0, "plain", input)
+	err := call.Store(&output, &sessionPath)
+	return sessionPath, err
+}
+
+// openDHSession opens a [dh-ietf1024-sha256-aes128-cbc-pkcs7] session to the
+// secret service. Secrets are encrypted using an AES key generated via a
+// Diffie-Hellman exchange performed when opening the session. It returns the
+// path to the session if successful, otherwise it returns an error.
+//
+// [dh-ietf1024-sha256-aes128-cbc-pkcs7]: https://specifications.freedesktop.org/secret-service-spec/latest/ch07s03.html
+func (ss *SecretService) openDHSession() (dbus.ObjectPath, error) {
+	group := rfc2409SecondOakleyGroup()
+	private, public, err := group.NewKeypair()
+	if err != nil {
+		return "", err
+	}
+
+	input := dbus.MakeVariant(public.Bytes()) // math/big.Int.Bytes is big endian
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	call := ss.svc.Call("org.freedesktop.Secret.Service.OpenSession", 0, "dh-ietf1024-sha256-aes128-cbc-pkcs7", input)
+	err = call.Store(&output, &sessionPath)
+	if err != nil {
+		return "", err
+	}
+
+	outputBytes, ok := output.Value().([]byte)
+	if !ok {
+		return "", fmt.Errorf("output type of OpenSession was not []bytes: %T", output.Value())
+	}
+
+	theirPublic := new(big.Int)
+	theirPublic.SetBytes(outputBytes)
+	ss.aesKey, err = group.keygenHKDFSHA256AES128(theirPublic, private)
+	if err != nil {
+		return "", err
+	}
+	return sessionPath, nil
 }
 
 // Close closes the session with the secret service, making it no longer
@@ -123,7 +197,11 @@ func (ss *SecretService) Get(attrs map[string]string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return string(secret.Secret), nil
+		sec, err := ss.unmarshalSecret(&secret)
+		if err != nil {
+			return "", err
+		}
+		return sec, nil
 	}
 
 	return "", nil
@@ -140,10 +218,9 @@ func (ss *SecretService) Store(label string, attrs map[string]string, secret str
 		"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant(label),
 		"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(attrs),
 	}
-	sec := Secret{
-		Session:     ss.session.Path(),
-		Secret:      []byte(secret),
-		ContentType: "text/plain",
+	sec, err := ss.marshalSecret(secret)
+	if err != nil {
+		return err
 	}
 
 	// Try to unlock the collection first. Will be a no-op if it is not locked
@@ -199,7 +276,11 @@ func (ss *SecretService) Delete(attrs map[string]string, expectedPassword string
 			if err != nil {
 				return err
 			}
-			password, _, _ := strings.Cut(string(secret.Secret), "\n")
+			sec, err := ss.unmarshalSecret(&secret)
+			if err != nil {
+				return err
+			}
+			password, _, _ := strings.Cut(sec, "\n")
 			if password != expectedPassword {
 				continue
 			}
@@ -224,6 +305,48 @@ func (ss *SecretService) Delete(attrs map[string]string, expectedPassword string
 	}
 
 	return ss.prompt(promptPath)
+}
+
+// marshalSecret marshals the given secret into a Secret struct suitable for
+// passing to the Secret Service for storage. If the receiver has an AES key,
+// it is used to encrypt the secret as well as to populate the initialisation
+// vector (IV) that is the parameter of the Secret. If the AES key in the
+// receiver is empty, the secret is not encrypted. If there was an error
+// encrypting the secret, it is returned.
+func (ss *SecretService) marshalSecret(secret string) (*Secret, error) {
+	sec := &Secret{
+		Session:     ss.session.Path(),
+		Secret:      []byte(secret),
+		ContentType: "text/plain",
+	}
+
+	if len(ss.aesKey) > 0 {
+		iv, ciphertext, err := unauthenticatedAESCBCEncrypt([]byte(secret), ss.aesKey)
+		if err != nil {
+			return nil, err
+		}
+		sec.Params = iv
+		sec.Secret = ciphertext
+	}
+	return sec, nil
+}
+
+// unmarshalSecret unmarshals the secret from the Secret struct returned from
+// the Secret Service and returns the string form of the secret. If the
+// receiver has an AES key, it is used to decrypt the secret in the Secret
+// struct using the Param as the initialisation vector (IV) to the AES
+// decryper. If the AES key in the receiver is empty, the secret is not
+// decrypted. If there was an error decrypting the secret, it is returned.
+func (ss *SecretService) unmarshalSecret(secret *Secret) (string, error) {
+	plaintext := secret.Secret
+	if len(ss.aesKey) > 0 {
+		var err error
+		plaintext, err = unauthenticatedAESCBCDecrypt(secret.Params, secret.Secret, ss.aesKey)
+		if err != nil {
+			return "", err
+		}
+	}
+	return string(plaintext), nil
 }
 
 // searchExact returns a function iterator that iterates all the items in the
