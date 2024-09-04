@@ -81,7 +81,7 @@ func (gc *GitCredential) Unmarshal(r io.Reader) error {
 				if err != nil {
 					return err
 				}
-				gc.Port = uint16(i)
+				gc.Port = uint16(i) //nolint:gosec // not an integer overlflow
 			}
 		case "path":
 			gc.Path = v

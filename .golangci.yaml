@@ -18,9 +18,11 @@ linters:
     - execinquery
     - exhaustive
     - exhaustruct
+    - exportloopref
     - forbidigo
     - forcetypeassert
     - funlen
+    - gci
     - gochecknoglobals
     - gocognit
     - goconst
