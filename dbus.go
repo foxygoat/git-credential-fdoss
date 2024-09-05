@@ -420,10 +420,13 @@ func (ss *SecretService) getSecret(itemPath dbus.ObjectPath) (secret Secret, err
 	return
 }
 
-// attrsMatch returns true if the given items have exactly the given
-// attributes. If the item has extra or fewer attributes, or any values are
-// different, false is returned. If the attributes of the item could be
-// retrieved an error is returned.
+// attrsMatch compares a map of attributes against the attributes of an item.
+// Only the attributes that we may put on an item are compared. If there are
+// other attributes added by other parties, they are ignored.
+//
+// attrsMatch returns true if all the attributes we care about match, or false
+// if any differ. If the item attributes could not be retrieved, an eror is
+// returned.
 func (ss *SecretService) attrsMatch(attrs map[string]string, itemPath dbus.ObjectPath) (bool, error) {
 	item := ss.conn.Object("org.freedesktop.secrets", itemPath)
 	prop, err := item.GetProperty("org.freedesktop.Secret.Item.Attributes")
@@ -436,12 +439,10 @@ func (ss *SecretService) attrsMatch(attrs map[string]string, itemPath dbus.Objec
 		return false, fmt.Errorf("item attributes property is not a map: %v", itemPath)
 	}
 
-	if len(itemAttrs) != len(attrs) {
-		return false, nil
-	}
-	for k, v1 := range attrs {
-		v2, ok := itemAttrs[k]
-		if !ok || v1 != v2 {
+	for _, attr := range ourAttrs {
+		v1, ok1 := attrs[attr]
+		v2, ok2 := itemAttrs[attr]
+		if ok1 != ok2 || (ok1 && v1 != v2) {
 			return false, nil
 		}
 	}
