@@ -195,6 +195,11 @@ func makeLabel(gc *GitCredential) string {
 	return label
 }
 
+// ourAttrs is a slice of attribute names we use on secrets stored in the
+// Secret Service. It can be used to filter out attributes added/managed by
+// others.
+var ourAttrs = []string{"xdg:schema", "user", "protocol", "server", "port", "object"}
+
 // makeAttrs maps the fields of GitCredentials to secret service attribues. The
 // [mapping] is taken from git-credential-libsecret to be compatible with it.
 //
