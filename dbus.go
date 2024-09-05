@@ -213,6 +213,12 @@ func (ss *SecretService) Get(attrs map[string]string) (string, error) {
 // the secret could not be created, an error is returned.
 func (ss *SecretService) Store(label string, attrs map[string]string, secret string) error {
 	path := dbus.ObjectPath("/org/freedesktop/secrets/aliases/default")
+	// Try to unlock the collection first. Will be a no-op if it is not locked
+	// but if it is locked, we'll prompt the user to unlock it.
+	if _, err := ss.unlockObject(path); err != nil {
+		return err
+	}
+
 	collection := ss.conn.Object("org.freedesktop.secrets", path)
 	props := map[string]dbus.Variant{
 		"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant(label),
@@ -223,22 +229,17 @@ func (ss *SecretService) Store(label string, attrs map[string]string, secret str
 		return err
 	}
 
-	// Try to unlock the collection first. Will be a no-op if it is not locked
-	// but if it is locked, we'll prompt the user to unlock it.
-	if _, err := ss.unlockObject(path); err != nil {
-		return err
-	}
-
 	var itemPath, promptPath dbus.ObjectPath
 	call := collection.Call("org.freedesktop.Secret.Collection.CreateItem", 0, props, &sec, true)
 	if err := call.Store(&itemPath, &promptPath); err != nil {
 		return fmt.Errorf("couldn't create secret: %w", err)
 	}
 
-	if promptPath != noPrompt {
-		return ss.prompt(promptPath)
+	if promptPath == noPrompt {
+		return nil
 	}
-	return nil
+
+	return ss.prompt(promptPath)
 }
 
 // Delete removes a secret matching the given attributes. If expectedPassword
