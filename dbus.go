@@ -23,7 +23,7 @@ const (
 // It supports adding secrets, looking them up and deleting them, mapping to
 // the "store", "get" and "erase" commands of the git-credential protocol.
 //
-// [Secret Service Specification]: https://specifications.freedesktop.org/secret-service-spec/latest
+// [Secret Service Specification]: https://specifications.freedesktop.org/secret-service-spec/0.2/
 type SecretService struct {
 	conn    *dbus.Conn
 	svc     dbus.BusObject
@@ -36,7 +36,7 @@ type SecretService struct {
 // dbus library into the correct wire format - no struct tags or other magic
 // needed.
 //
-// [Secret]: https://specifications.freedesktop.org/secret-service-spec/latest/types.html#type-Secret
+// [Secret]: https://specifications.freedesktop.org/secret-service-spec/0.2/types.html#type-Secret
 type Secret struct {
 	Session     dbus.ObjectPath
 	Params      []byte
@@ -83,8 +83,8 @@ func NewSecretService() (*SecretService, error) {
 // fallback to a plain session. Not all implementations of the Secret Service
 // may support encrypted sessions.
 //
-// [session]: https://specifications.freedesktop.org/secret-service-spec/latest/sessions.html
-// [transfer of secrets]: https://specifications.freedesktop.org/secret-service-spec/latest/transfer-secrets.html
+// [session]: https://specifications.freedesktop.org/secret-service-spec/0.2/sessions.html
+// [transfer of secrets]: https://specifications.freedesktop.org/secret-service-spec/0.2/transfer-secrets.html
 func (ss *SecretService) OpenSession() error {
 	sessionPath, err := ss.openDHSession()
 	if err != nil {
@@ -102,7 +102,7 @@ func (ss *SecretService) OpenSession() error {
 // not encrypted over the bus with a plain session. It returns the path to the
 // session if successful, otherwise it returns an error.
 //
-// [plain]: https://specifications.freedesktop.org/secret-service-spec/latest/ch07s02.html
+// [plain]: https://specifications.freedesktop.org/secret-service-spec/0.2/ch07s02.html
 func (ss *SecretService) openPlainSession() (dbus.ObjectPath, error) {
 	input := dbus.MakeVariant("")
 	var output dbus.Variant
@@ -117,7 +117,7 @@ func (ss *SecretService) openPlainSession() (dbus.ObjectPath, error) {
 // Diffie-Hellman exchange performed when opening the session. It returns the
 // path to the session if successful, otherwise it returns an error.
 //
-// [dh-ietf1024-sha256-aes128-cbc-pkcs7]: https://specifications.freedesktop.org/secret-service-spec/latest/ch07s03.html
+// [dh-ietf1024-sha256-aes128-cbc-pkcs7]: https://specifications.freedesktop.org/secret-service-spec/0.2/ch07s03.html
 func (ss *SecretService) openDHSession() (dbus.ObjectPath, error) {
 	group := rfc2409SecondOakleyGroup()
 	private, public, err := group.NewKeypair()
@@ -371,7 +371,7 @@ func (ss *SecretService) unmarshalSecret(secret *Secret) (string, error) {
 //		// .. do something with itemPath
 //	}
 //
-// [SearchItems]: https://specifications.freedesktop.org/secret-service-spec/latest/org.freedesktop.Secret.Service.html#org.freedesktop.Secret.Service.SearchItems
+// [SearchItems]: https://specifications.freedesktop.org/secret-service-spec/0.2/org.freedesktop.Secret.Service.html#org.freedesktop.Secret.Service.SearchItems
 func (ss *SecretService) searchExact(attrs map[string]string) (iter.Seq2[dbus.ObjectPath, error], error) {
 	unlocked, locked, err := ss.search(attrs)
 	if err != nil {
@@ -474,7 +474,7 @@ func (ss *SecretService) unlockObject(itemPath dbus.ObjectPath) (dbus.ObjectPath
 // unlock attempts to [unlock] the objects given and returns the paths for the
 // objects that were unlocked and a prompt path to unlock the remainder.
 //
-// [unlock]: https://specifications.freedesktop.org/secret-service-spec/latest/unlocking.html
+// [unlock]: https://specifications.freedesktop.org/secret-service-spec/0.2/unlocking.html
 func (ss *SecretService) unlock(objects []dbus.ObjectPath) (unlocked []dbus.ObjectPath, prompt dbus.ObjectPath, err error) {
 	svc := ss.conn.Object("org.freedesktop.secrets", dbus.ObjectPath("/org/freedesktop/secrets"))
 	call := svc.Call("org.freedesktop.Secret.Service.Unlock", 0, objects)
@@ -487,7 +487,7 @@ func (ss *SecretService) unlock(objects []dbus.ObjectPath) (unlocked []dbus.Obje
 // was completed, or false if it was cancelled. If an error occurs subscribing
 // to the signal or calling the prompt object, it is returned instead.
 //
-// [prompt]: https://specifications.freedesktop.org/secret-service-spec/latest/prompts.html
+// [prompt]: https://specifications.freedesktop.org/secret-service-spec/0.2/prompts.html
 func (ss *SecretService) prompt(path dbus.ObjectPath) error {
 	// Subscribe to signals on the prompt object so we can get the
 	// "Completed" signal when the prompt is complete. We do this
