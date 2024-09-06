@@ -4,7 +4,7 @@
 [freedesktop.org Secret Service] via [D-Bus] for storage of git credentials.
 
 [git credential helper]: https://git-scm.com/doc/credential-helpers
-[freedesktop.org Secret Service]: https://specifications.freedesktop.org/secret-service/
+[freedesktop.org Secret Service]: https://specifications.freedesktop.org/secret-service-spec/0.2/
 [D-Bus]: https://www.freedesktop.org/wiki/Software/dbus/
 
     go install foxygo.at/git-credential-helper@latest
